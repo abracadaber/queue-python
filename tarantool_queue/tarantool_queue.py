@@ -40,7 +40,7 @@ class Task(object):
         :rtype: `Task` instance
         """
         self.modified = True
-        return self.queue._ack(self.task_id)
+        return self.queue._ack(self.tube, self.task_id)
 
     def release(self, **kwargs):
         """
@@ -53,7 +53,7 @@ class Task(object):
         :rtype: `Task` instance
         """
         self.modified = True
-        return self.queue._release(self.task_id, **kwargs)
+        return self.queue._release(self.tube, self.task_id, **kwargs)
 
     def delete(self):
         """
@@ -62,7 +62,7 @@ class Task(object):
         :rtype: boolean
         """
         self.modified = True
-        return self.queue._delete(self.task_id)
+        return self.queue._delete(self.tube, self.task_id)
 
     def requeue(self):
         """
@@ -74,7 +74,7 @@ class Task(object):
         :rtype: boolean
         """
         self.modified = True
-        return self.queue._requeue(self.task_id)
+        return self.queue._requeue(self.tube, self.task_id)
 
     def done(self, data):
         """
@@ -85,8 +85,7 @@ class Task(object):
         :rtype: boolean
         """
         self.modified = True
-        the_tuple = self.queue.tnt.call("queue.done", (
-            str(self.queue.space),
+        the_tuple = self.queue.tnt.call("queue.tube.%s.done" % self.name, (
             str(self.task_id),
             self.queue.tube(self.tube).serialize(data))
         )
@@ -103,7 +102,7 @@ class Task(object):
         :rtype: boolean
         """
         self.modified = True
-        return self.queue._bury(self.task_id)
+        return self.queue._bury(self.tube, self.task_id)
 
     def dig(self):
         """
@@ -113,14 +112,14 @@ class Task(object):
         :rtype: boolean
         """
         self.modified = True
-        return self.queue._dig(self.task_id)
+        return self.queue._dig(self.tube, self.task_id)
 
     def meta(self):
         """
         Return unpacked task metadata.
         :rtype: dict with metainformation or None
         """
-        return self.queue._meta(self.task_id)
+        return self.queue._meta(self.tube, self.task_id)
 
     def touch(self):
         """
@@ -128,7 +127,7 @@ class Task(object):
 
         :rtype: boolean
         """
-        return self.queue._touch(self.task_id)
+        return self.queue._touch(self.tube, self.task_id)
 
     @property
     def data(self):
@@ -150,7 +149,7 @@ class Task(object):
             self.release()
 
     @classmethod
-    def from_tuple(cls, queue, the_tuple):
+    def from_tuple(cls, queue, the_tuple, tube):
         if the_tuple is None:
             return
         if the_tuple.rowcount < 1:
@@ -160,9 +159,9 @@ class Task(object):
             queue,
             space=queue.space,
             task_id=row[0],
-            tube=row[1],
-            status=row[2],
-            raw_data=row[3],
+            tube=tube,
+            status=row[1],
+            raw_data=row[2],
         )
 
 
@@ -249,17 +248,15 @@ class Tube(object):
         """
         opt = dict(self.opt, **kwargs)
 
-        the_tuple = self.queue.tnt.call(method, (
-            str(self.queue.space),
-            str(opt["tube"]),
+        the_tuple = self.queue.tnt.call(
+            method, data,
             str(opt["delay"]),
             str(opt["ttl"]),
             str(opt["ttr"]),
             str(opt["pri"]),
-            self.serialize(data))
         )
 
-        return Task.from_tuple(self.queue, the_tuple)
+        return Task.from_tuple(self.queue, the_tuple, opt["tube"])
 
     def put(self, data, **kwargs):
         """
@@ -279,14 +276,14 @@ class Tube(object):
         :type tube: string
         :rtype: `Task` instance
         """
-        return self._produce("queue.put", data, **kwargs)
+        return self._produce("queue.tube.%s:put" % str(self.opt["tube"]), data, **kwargs)
 
     def put_unique(self, data, **kwargs):
         """
         Same as :meth:`Tube.put() <tarantool_queue.Tube.put>` put,
         but it returns None if task exists
         """
-        return self._produce("queue.put_unique", data, **kwargs)
+        return self._produce("queue.tube.%s:put_unique" % str(self.opt["tube"]), data, **kwargs)
 
     def urgent(self, data=None, **kwargs):
         """
@@ -294,7 +291,7 @@ class Tube(object):
         but set highest priority for this task.
         """
         kwargs['delay'] = 0
-        return self._produce("queue.urgent", data, **kwargs)
+        return self._produce("queue.tube.%s:urgent" % str(self.opt["tube"]), data, **kwargs)
 
     def take(self, timeout=0):
         """
@@ -384,7 +381,7 @@ class Queue(object):
     def basic_deserialize(data):
         return msgpack.unpackb(data)
 
-    def __init__(self, host="localhost", port=33013, space=0, schema=None):
+    def __init__(self, host="localhost", port=33013, space=0):
         if not(host and port):
             raise Queue.BadConfigException("host and port params "
                                            "must be not empty")
@@ -398,7 +395,6 @@ class Queue(object):
         self.host = host
         self.port = port
         self.space = space
-        self.schema = schema
         self.tubes = {}
         self._serialize = self.basic_serialize
         self._deserialize = self.basic_deserialize
@@ -509,51 +505,49 @@ class Queue(object):
         if not hasattr(self, '_tnt'):
             with self.tarantool_lock:
                 if not hasattr(self, '_tnt'):
-                    self._tnt = self.tarantool_connection(self.host, self.port,
-                                                          schema=self.schema)
+                    self._tnt = self.tarantool_connection(self.host, self.port)
         return self._tnt
 
     def _take(self, tube, timeout=0):
-        args = [str(self.space), str(tube)]
-        if timeout is not None:
-            args.append(str(timeout))
-        the_tuple = self.tnt.call("queue.take", tuple(args))
+        args = []
+        if timeout:
+            args.append(timeout)
+        the_tuple = self.tnt.call("queue.tube.%s:take" % str(tube), tuple(args))
         if the_tuple.rowcount == 0:
             return None
-        return Task.from_tuple(self, the_tuple)
+        return Task.from_tuple(self, the_tuple, tube)
 
-    def _ack(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.ack", args)
+    def _ack(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:ack" % str(tube), args)
         return the_tuple.return_code == 0
 
-    def _release(self, task_id, delay=0, ttl=0):
-        the_tuple = self.tnt.call("queue.release", (
-            str(self.space),
+    def _release(self, tube, task_id, delay=0, ttl=0):
+        the_tuple = self.tnt.call("queue.tube.%s:release" % str(tube), (
             str(task_id),
             str(delay),
             str(ttl)
         ))
-        return Task.from_tuple(self, the_tuple)
+        return Task.from_tuple(self, the_tuple, tube)
 
-    def _requeue(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.requeue", args)
+    def _requeue(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:requeue" % str(tube), args)
         return the_tuple.return_code == 0
 
-    def _bury(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.bury", args)
+    def _bury(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:bury" % str(tube), args)
         return the_tuple.return_code == 0
 
-    def _delete(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.delete", args)
+    def _delete(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:delete" % str(tube), args)
         return the_tuple.return_code == 0
 
-    def _meta(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.meta", args)
+    def _meta(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:meta" % str(tube), args)
         if the_tuple.rowcount:
             row = list(the_tuple[0])
             for index in [3, 7, 8, 9, 10, 11, 12]:
@@ -568,7 +562,7 @@ class Queue(object):
             return dict(zip(keys, row))
         return None
 
-    def peek(self, task_id):
+    def peek(self, tube, task_id):
         """
         Return a task by task id.
 
@@ -576,20 +570,20 @@ class Queue(object):
         :type task_id: string
         :rtype: `Task` instance
         """
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.peek", args)
-        return Task.from_tuple(self, the_tuple)
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:peek" % tube, args)
+        return Task.from_tuple(self, the_tuple, tube)
 
-    def _dig(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.dig", args)
+    def _dig(self, tube, task_id):
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:bury" % tube, args)
         return the_tuple.return_code == 0
 
     def _kick(self, tube, count=None):
-        args = [str(self.space), str(tube)]
+        args = []
         if count:
             args.append(str(count))
-        the_tuple = self.tnt.call("queue.kick", tuple(args))
+        the_tuple = self.tnt.call("queue.tube.%s:kick" % tube, tuple(args))
         return the_tuple.return_code == 0
 
     def truncate(self, tube):
@@ -600,8 +594,8 @@ class Queue(object):
         :type tube: string
         :rtype: int
         """
-        args = (str(self.space), tube)
-        deleted = self.tnt.call("queue.truncate", args)
+        args = ()
+        deleted = self.tnt.call("queue.tube.%s:truncate" % tube, args)
         return unpack_long(deleted[0][0])
 
     def statistics(self, tube=None):
@@ -673,8 +667,8 @@ class Queue(object):
         return ans[tube] if tube else ans
 
     def _touch(self, task_id):
-        args = (str(self.space), task_id)
-        the_tuple = self.tnt.call("queue.touch", tuple(args))
+        args = (task_id,)
+        the_tuple = self.tnt.call("queue.tube.%s:touch" % str(self.space), tuple(args))
         return the_tuple.return_code == 0
 
     def tube(self, name, **kwargs):

@@ -50,7 +50,7 @@ setup(
     platforms=["all"],
     install_requires=[
         'msgpack-python',
-        'tarantool<0.4'
+        'tarantool'
     ],
     url='http://github.com/tarantool/tarantool-queue-python',
     test_suite='tests.test_queue',
