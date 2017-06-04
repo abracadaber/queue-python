@@ -33,6 +33,10 @@ class Task(object):
         self.queue = queue
         self.modified = False
 
+    def __del__(self):
+        if not self.modified:
+            self.release()
+
     def ack(self):
         """
         Confirm completion of a task. Before marking a task as complete
@@ -666,9 +670,9 @@ class Queue(object):
                             error when parsing respons')
         return ans[tube] if tube else ans
 
-    def _touch(self, task_id):
+    def _touch(self, tube, task_id):
         args = (task_id,)
-        the_tuple = self.tnt.call("queue.tube.%s:touch" % str(self.space), tuple(args))
+        the_tuple = self.tnt.call("queue.tube.%s:touch" % str(tube), tuple(args))
         return the_tuple.return_code == 0
 
     def tube(self, name, **kwargs):
