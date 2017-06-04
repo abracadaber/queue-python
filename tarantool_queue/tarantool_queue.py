@@ -181,10 +181,6 @@ class Tube(object):
     def __init__(self, queue, name, **kwargs):
         self.queue = queue
         self.opt = {
-            'delay': 0,
-            'ttl': 0,
-            'ttr': 0,
-            'pri': 0,
             'tube': name
         }
         self.opt.update(kwargs)
@@ -251,13 +247,8 @@ class Tube(object):
         :rtype: `Task` instance
         """
         opt = dict(self.opt, **kwargs)
-
         the_tuple = self.queue.tnt.call(
-            method, data,
-            str(opt["delay"]),
-            str(opt["ttl"]),
-            str(opt["ttr"]),
-            str(opt["pri"]),
+            method, data, opt
         )
 
         return Task.from_tuple(self.queue, the_tuple, opt["tube"])
