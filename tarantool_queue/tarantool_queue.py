@@ -518,11 +518,9 @@ class Queue(object):
         return the_tuple.return_code == 0
 
     def _release(self, tube, task_id, delay=0, ttl=0):
-        the_tuple = self.tnt.call("queue.tube.%s:release" % str(tube), (
-            str(task_id),
-            str(delay),
-            str(ttl)
-        ))
+        the_tuple = self.tnt.call("queue.tube.%s:release" % str(tube),
+                                  (task_id, dict(delay=delay, ttl=ttl),),
+        )
         return Task.from_tuple(self, the_tuple, tube)
 
     def _requeue(self, tube, task_id):
